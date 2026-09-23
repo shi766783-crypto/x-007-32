@@ -17,10 +17,20 @@ const user = useUserStore()
 // 每个食材对应的“要做的菜”输入（动态 key，需用 reactive）
 const pickedDish = reactive({})
 
-// 可挑战食材 = 临期 + 过期
+// 可挑战食材 = 临期 + 过期（排除被暂时跳过的）
 const candidates = computed(() =>
-  [...inventory.nearExpiryItems, ...inventory.expiredItems].sort((a, b) => a.remain - b.remain),
+  [...inventory.nearExpiryItems, ...inventory.expiredItems]
+    .filter((i) => !challenge.skippedIngredientIds.has(i.id))
+    .sort((a, b) => a.remain - b.remain),
 )
+
+// 已跳过且仍在库存中的食材（关联库存拿到最新的剩余天数）
+const skippedItems = computed(() => {
+  const byId = new Map(inventory.withExpiry.map((i) => [i.id, i]))
+  return challenge.skipped
+    .map((s) => ({ ...s, item: byId.get(s.ingredientId) }))
+    .filter((s) => s.item)
+})
 
 function complete(item) {
   const dishName = pickedDish[item.id]
@@ -33,6 +43,11 @@ function complete(item) {
     ingredientName: item.name,
     dishName: dishName.trim(),
   })
+  delete pickedDish[item.id]
+}
+
+function skip(item) {
+  challenge.skip({ ingredientId: item.id, ingredientName: item.name })
   delete pickedDish[item.id]
 }
 
@@ -51,7 +66,8 @@ function fmt(iso) {
 
     <p class="muted">选择临期/过期食材，做一道菜吃掉它，完成后打卡获得 <b>{{ CHALLENGE_POINTS }} 积分</b>！</p>
 
-    <BaseEmpty v-if="!candidates.length" emoji="🧊" text="没有需要清理的临期/过期食材，冰箱很干净！" />
+    <BaseEmpty v-if="!candidates.length && !skippedItems.length" emoji="🧊" text="没有需要清理的临期/过期食材，冰箱很干净！" />
+    <BaseEmpty v-else-if="!candidates.length" emoji="🙈" text="临期食材都已暂时跳过，可在下方「已跳过」中恢复。" />
 
     <div v-else class="grid grid-2">
       <div v-for="item in candidates" :key="item.id" class="challenge card">
@@ -78,8 +94,27 @@ function fmt(iso) {
             <input v-model="pickedDish[item.id]" type="text" placeholder="或输入新菜名" />
           </div>
           <BaseButton block @click="complete(item)">✅ 完成打卡 +{{ CHALLENGE_POINTS }}积分</BaseButton>
+          <BaseButton block variant="ghost" size="sm" @click="skip(item)">🙈 暂时跳过</BaseButton>
         </template>
         <div v-else class="done">🎉 已清理</div>
+      </div>
+    </div>
+
+    <div v-if="skippedItems.length" class="card">
+      <div class="section-title">已跳过（{{ skippedItems.length }}）</div>
+      <div class="records">
+        <div v-for="s in skippedItems" :key="s.id" class="rec">
+          <span>
+            🙈 {{ s.ingredientName }}
+            <span class="muted small">
+              {{ s.item.quantity }}{{ s.item.unit }} ·
+              <span :style="{ color: s.item.status === 'expired' ? '#ef5350' : '#ff9800' }">
+                {{ s.item.status === 'expired' ? `已过期 ${Math.abs(s.item.remain)} 天` : `剩 ${s.item.remain} 天` }}
+              </span>
+            </span>
+          </span>
+          <BaseButton variant="text" size="sm" @click="challenge.restore(s.ingredientId)">↩️ 恢复</BaseButton>
+        </div>
       </div>
     </div>
 
