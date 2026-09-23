@@ -17,9 +17,29 @@ const user = useUserStore()
 // 每个食材对应的“要做的菜”输入（动态 key，需用 reactive）
 const pickedDish = reactive({})
 
-// 可挑战食材 = 临期 + 过期
-const candidates = computed(() =>
+// 可挑战食材 = 临期 + 过期（含被跳过的，用于恢复区匹配真实库存）
+const rawCandidates = computed(() =>
   [...inventory.nearExpiryItems, ...inventory.expiredItems].sort((a, b) => a.remain - b.remain),
+)
+
+// 候选列表中隐藏已跳过的食材
+const candidates = computed(() =>
+  rawCandidates.value.filter((item) => !challenge.skippedIngredientIds.has(item.id)),
+)
+
+// 已跳过且仍在库存里属于临期/过期的食材，附带最新的保质期信息
+const skippedItems = computed(() =>
+  challenge.skipped
+    .map((s) => {
+      const live = rawCandidates.value.find((i) => i.id === s.ingredientId)
+      // s 只含 id/ingredientId/ingredientName/date，name、数量等仍取自实时库存
+      return live ? { ...live, ...s } : null
+    })
+    .filter(Boolean),
+)
+
+const allHidden = computed(
+  () => !candidates.value.length && rawCandidates.value.length > 0,
 )
 
 function complete(item) {
@@ -34,6 +54,16 @@ function complete(item) {
     dishName: dishName.trim(),
   })
   delete pickedDish[item.id]
+}
+
+// 暂时跳过：只在挑战页隐藏，不影响库存数量
+function skip(item) {
+  challenge.skip({ ingredientId: item.id, ingredientName: item.name })
+  delete pickedDish[item.id]
+}
+
+function restore(s) {
+  challenge.undoskip(s.ingredientId)
 }
 
 function fmt(iso) {
@@ -51,7 +81,8 @@ function fmt(iso) {
 
     <p class="muted">选择临期/过期食材，做一道菜吃掉它，完成后打卡获得 <b>{{ CHALLENGE_POINTS }} 积分</b>！</p>
 
-    <BaseEmpty v-if="!candidates.length" emoji="🧊" text="没有需要清理的临期/过期食材，冰箱很干净！" />
+    <BaseEmpty v-if="!rawCandidates.length" emoji="🧊" text="没有需要清理的临期/过期食材，冰箱很干净！" />
+    <BaseEmpty v-else-if="allHidden" emoji="🙈" text="当前待清理的食材都已暂时跳过，可在下方恢复" />
 
     <div v-else class="grid grid-2">
       <div v-for="item in candidates" :key="item.id" class="challenge card">
@@ -78,8 +109,26 @@ function fmt(iso) {
             <input v-model="pickedDish[item.id]" type="text" placeholder="或输入新菜名" />
           </div>
           <BaseButton block @click="complete(item)">✅ 完成打卡 +{{ CHALLENGE_POINTS }}积分</BaseButton>
+          <BaseButton block variant="ghost" @click="skip(item)">⏭️ 暂时跳过</BaseButton>
         </template>
         <div v-else class="done">🎉 已清理</div>
+      </div>
+    </div>
+
+    <div v-if="skippedItems.length" class="card">
+      <div class="section-title">已跳过（{{ skippedItems.length }}）</div>
+      <p class="muted small skip-tip">这些食材已从候选列表中隐藏，库存数量不受影响，随时可以恢复处理。</p>
+      <div class="records">
+        <div v-for="s in skippedItems" :key="s.id" class="rec">
+          <span>
+            ⏭️ {{ s.name }}
+            <span class="muted small">
+              · {{ s.quantity }}{{ s.unit }}
+              · 跳过于 {{ fmt(s.date) }}
+            </span>
+          </span>
+          <BaseButton size="sm" variant="ghost" @click="restore(s)">↩️ 恢复</BaseButton>
+        </div>
       </div>
     </div>
 
@@ -151,6 +200,9 @@ function fmt(iso) {
   font-weight: 600;
   color: var(--primary-dark);
 }
+.skip-tip {
+  margin: 6px 0 10px;
+}
 .records {
   display: flex;
   flex-direction: column;
@@ -159,6 +211,8 @@ function fmt(iso) {
 .rec {
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  gap: 12px;
   padding: 8px 0;
   border-bottom: 1px solid var(--border);
   font-size: 13px;
